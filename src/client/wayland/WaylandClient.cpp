@@ -20,6 +20,8 @@
 #include "WaylandProtocolManager.h"
 #include "WlrForeignToplevelManagementV1.h"
 #include <QObject>
+#include <cstring>
+#include <libinputactions/globals.h>
 
 namespace InputActions
 {
@@ -27,8 +29,6 @@ namespace InputActions
 WaylandClient::WaylandClient(DBusEnvironmentStateProvider &dbusEnvironmentStateProvider)
     : m_dbusEnvironmentStateProvider(dbusEnvironmentStateProvider)
 {
-    connect(&m_displayDispatchTimer, &QTimer::timeout, this, &WaylandClient::onDisplayDispatchTimerTick);
-    m_displayDispatchTimer.setInterval(100);
 }
 
 WaylandClient::~WaylandClient() = default;
@@ -42,13 +42,47 @@ bool WaylandClient::initialize()
 
     m_protocolManager = std::make_unique<WaylandProtocolManager>(wl_display_get_registry(m_display));
     m_protocolManager->addProtocol(std::make_unique<WlrForeignToplevelManagementV1>(m_dbusEnvironmentStateProvider));
-    m_displayDispatchTimer.start();
+
+    m_displayNotifier = std::make_unique<QSocketNotifier>(wl_display_get_fd(m_display), QSocketNotifier::Read);
+    connect(m_displayNotifier.get(), &QSocketNotifier::activated, this, &WaylandClient::onDisplayReadable);
+    flush();
     return true;
 }
 
-void WaylandClient::onDisplayDispatchTimerTick()
+void WaylandClient::onDisplayReadable()
 {
-    wl_display_roundtrip(m_display);
+    while (wl_display_prepare_read(m_display) != 0) {
+        if (wl_display_dispatch_pending(m_display) == -1) {
+            checkDisplayError();
+            return;
+        }
+    }
+
+    // Doesn't block, as the socket is readable
+    if (wl_display_read_events(m_display) == -1 || wl_display_dispatch_pending(m_display) == -1) {
+        checkDisplayError();
+        return;
+    }
+    flush();
+}
+
+void WaylandClient::flush()
+{
+    // Not fatal on EAGAIN (socket buffer full), the remaining requests are sent by the next flush
+    if (wl_display_flush(m_display) == -1) {
+        checkDisplayError();
+    }
+}
+
+void WaylandClient::checkDisplayError()
+{
+    const auto error = wl_display_get_error(m_display);
+    if (error == 0) {
+        return;
+    }
+
+    qWarning(INPUTACTIONS, "Lost connection to the Wayland compositor: %s", strerror(error));
+    m_displayNotifier->setEnabled(false);
 }
 
 }

@@ -19,7 +19,8 @@
 #pragma once
 
 #include <QObject>
-#include <QTimer>
+#include <QSocketNotifier>
+#include <memory>
 #include <wayland-client.h>
 
 namespace InputActions
@@ -40,11 +41,23 @@ public:
     bool initialize();
 
 private slots:
-    void onDisplayDispatchTimerTick();
+    void onDisplayReadable();
 
 private:
+    /**
+     * Sends queued requests. Must be called after anything that may send requests, as nothing else does.
+     */
+    void flush();
+    /**
+     * Stops processing the display if a fatal error has occurred, as its socket would otherwise keep waking up the event loop.
+     */
+    void checkDisplayError();
+
     wl_display *m_display;
-    QTimer m_displayDispatchTimer;
+    /**
+     * Events are read only when available, so that an unresponsive compositor can't block the main thread.
+     */
+    std::unique_ptr<QSocketNotifier> m_displayNotifier;
     std::unique_ptr<WaylandProtocolManager> m_protocolManager;
 
     DBusEnvironmentStateProvider &m_dbusEnvironmentStateProvider;
